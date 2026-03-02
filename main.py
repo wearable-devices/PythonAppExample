@@ -3,8 +3,9 @@ import sys
 import os
 from pathlib import Path
 from mudra_sdk import Mudra, MudraDevice, FirmwareCallbacks
+from mudra_sdk.cloud import MudraServerClient, SigninRequest
 from mudra_sdk.models.callbacks import BleServiceDelegate, MudraDelegate
-from mudra_sdk.models.enums import AirMouseButton, FirmwareTarget, GestureType, MudraCharacteristicUUID, HandType
+from mudra_sdk.models.enums import AirMouseButton, FirmwareTarget, GestureType, MudraCharacteristicUUID, HandType, PressureType, NavigationDirectionGesture
 
 # Add parent directory to path so mudra_sdk can be imported
 parent_dir = Path(__file__).parent.parent
@@ -38,6 +39,71 @@ def update_devices_list(device):
     listbox.after(0, refresh_listbox)
 
 mudra = Mudra()
+mudra_server_client = MudraServerClient()
+
+
+def on_sign_in():
+    """Handle sign-in: validate inputs, call sign-in API, update status."""
+    email = email_entry.get().strip()
+    password = password_entry.get().strip()
+    platform_val = platform_var.get().strip()
+
+    if not email:
+        print("Error: Please enter your email address")
+        sign_in_status_label.config(text="Please enter your email.", foreground="red")
+        return
+    if not password:
+        print("Error: Please enter your password")
+        sign_in_status_label.config(text="Please enter your password.", foreground="red")
+        return
+    if not platform_val:
+        print("Error: Please select a platform")
+        sign_in_status_label.config(text="Please select a platform.", foreground="red")
+        return
+
+    sign_in_btn.config(state="disabled")
+    sign_in_status_label.config(text="Signing in...", foreground="blue")
+    root.update()
+
+    try:
+        signin_request = SigninRequest(
+            email=email,
+            password=password,
+            platform=platform_val,
+            application="Python Test Application"
+        )
+        print(f"\n{'='*50}")
+        print("Signing in...")
+        print(f"Email: {email}")
+        print(f"Platform: {platform_val}")
+        print(f"{'='*50}\n")
+
+        response = mudra_server_client.sign_in_api_call(signin_request.to_json())
+
+        print("✓ Sign in successful!")
+        print(f"\nResponse:")
+        print(f"  Access Token: {response.get('accessToken', 'N/A')}")
+        print(f"  Refresh Token: {response.get('refreshToken', 'N/A')}")
+        if isinstance(response, dict):
+            print(f"\nFull Response:")
+            for key, value in response.items():
+                print(f"  {key}: {value}")
+        print(f"\n{'='*50}\n")
+
+        sign_in_status_label.config(text="✓ Sign in successful! Check console for details.", foreground="green")
+        password_entry.delete(0, tk.END)
+    except Exception as e:
+        error_message = str(e)
+        print(f"\n{'='*50}")
+        print("✗ Sign in failed!")
+        print(f"Error: {error_message}")
+        print(f"{'='*50}\n")
+        sign_in_status_label.config(text=f"✗ Error: {error_message}", foreground="red")
+    finally:
+        sign_in_btn.config(state="normal")
+        root.update()
+
+
 class MyMudraDelegate(MudraDelegate):
     def on_device_discovered(self, device: MudraDevice):
         print(f"Discovered: {device.name}")
@@ -62,7 +128,6 @@ class MyMudraDelegate(MudraDelegate):
         print(f"Bluetooth state changed: {'On' if state else 'Off'}")
 
 mudra.set_delegate(MyMudraDelegate())
-mudra.get_license_for_email_from_cloud("----@----.---")
 
 def refresh_listbox():
     listbox.delete(0, tk.END)
@@ -216,7 +281,7 @@ def on_imu_gyro_ready(timestamp, data_list, frequency, frequency_std, rms_list):
     if root.winfo_exists():
         root.after(0, _update_imu_gyro_label)
 
-def on_navigation_ready(delta_x, delta_y):
+def on_navigation_axis_ready(delta_x, delta_y):
     print(f"Navigation delta: {delta_x}, {delta_y}")
     
     # Apply smoothing using moving average
@@ -242,14 +307,27 @@ def on_navigation_ready(delta_x, delta_y):
     if root.winfo_exists():
         root.after(0, _update_navigation_label)
 
-def on_pressure_ready(pressure_data):
+def on_navigation_direction_ready(direction: NavigationDirectionGesture):
+    direction_str = direction.description if hasattr(direction, 'description') else str(direction)
+    print(f"Navigation direction: {direction_str}")
+
+    def _update_navigation_direction_label():
+        if not root.winfo_exists():
+            return
+        navigation_direction_label.config(text=f"Navigation Direction: {direction_str}")
+
+    if root.winfo_exists():
+        root.after(0, _update_navigation_direction_label)
+
+
+def on_pressure_ready(pressure_data: float):
     # Update the pressure_bar on the Tkinter main thread
     def _update_pressure_bar():
         if not root.winfo_exists():
             return
 
         # Incoming pressure is in [0, 100]; clamp to that range
-        value = max(0.0, min(100.0, float(pressure_data)))
+        value = max(0.0, min(1.0, float(pressure_data)))
         pressure_bar.config(value=value)
         pressure_label.config(text=f"Pressure: {value:.2f}")
 
@@ -338,7 +416,7 @@ def enable_pressure_feature():
         print("No device selected to enable Pressure feature.")
         return
     print(f"Enable Pressure feature called for device: {device.name}")
-    asyncio.run_coroutine_threadsafe(device.set_on_pressure_ready(on_pressure_ready), loop)
+    asyncio.run_coroutine_threadsafe(device.set_on_pressure_ready(on_pressure_ready, PressureType.pinch), loop)
 
 
 def disable_pressure_feature():
@@ -348,22 +426,37 @@ def disable_pressure_feature():
         return
     print(f"Disable Pressure feature called for device: {device.name}")
     asyncio.run_coroutine_threadsafe(device.set_on_pressure_ready(None), loop)
-
-def enable_navigation_feature():
+def enable_navigation_axis_feature():
     device = get_selected_device()
     if device is None:
-        print("No device selected to enable Navigation feature.")
+        print("No device selected to enable Navigation Axis feature.")
         return
     print(f"Enable Navigation feature called for device: {device.name}")
-    asyncio.run_coroutine_threadsafe(device.set_on_navigation_ready(on_navigation_ready), loop)
+    asyncio.run_coroutine_threadsafe(device.set_on_navigation_axis_ready(on_navigation_axis_ready), loop)
 
-def disable_navigation_feature():
+def disable_navigation_axis_feature():
     device = get_selected_device()
     if device is None:
-        print("No device selected to disable Navigation feature.")
+        print("No device selected to disable Navigation Axis feature.")
         return
     print(f"Disable Navigation feature called for device: {device.name}")
-    asyncio.run_coroutine_threadsafe(device.set_on_navigation_ready(None), loop)
+    asyncio.run_coroutine_threadsafe(device.set_on_navigation_axis_ready(None), loop)
+
+def enable_navigation_direction_feature():
+    device = get_selected_device()
+    if device is None:
+        print("No device selected to enable Navigation Direction feature.")
+        return
+    print(f"Enable Navigation Direction feature called for device: {device.name}")
+    asyncio.run_coroutine_threadsafe(device.set_on_navigation_direction_ready(on_navigation_direction_ready), loop)
+
+def disable_navigation_direction_feature():
+    device = get_selected_device()
+    if device is None:
+        print("No device selected to disable Navigation Direction feature.")
+        return
+    print(f"Disable Navigation Direction feature called for device: {device.name}")
+    asyncio.run_coroutine_threadsafe(device.set_on_navigation_direction_ready(None), loop)
 
 def enable_gesture_feature():
     device = get_selected_device()
@@ -477,6 +570,7 @@ def set_hand_right():
     print(f"Set hand to right called for device: {device.name}")
     asyncio.run_coroutine_threadsafe(device.set_hand(HandType.right), loop)
 
+
 def _update_indicator(indicator_or_list, color):
     """Helper function to update indicator(s) - handles both single indicator and list of indicators."""
     if not root.winfo_exists():
@@ -517,7 +611,7 @@ def update_status_indicators():
         _update_indicator(status_indicators['imu_gyro'], color)
     
     if 'pressure' in status_indicators:
-        color = 'green' if fs.is_pressure_enabled else 'red'
+        color = 'green' if fs.is_pinch_pressure_enabled else 'red'
         _update_indicator(status_indicators['pressure'], color)
     
     if 'navigation' in status_indicators:
@@ -557,7 +651,8 @@ def update_status_indicators():
 def main():
     """Main function to set up and run the Tkinter GUI application."""
     global root, listbox, pressure_label, pressure_bar, rms_bars, rms_labels, status_indicators
-    global imu_acc_label, imu_gyro_label, navigation_label, gesture_label, air_touch_button_label
+    global imu_acc_label, imu_gyro_label, navigation_label, navigation_direction_label, gesture_label, air_touch_button_label
+    global email_entry, password_entry, platform_var, sign_in_btn, sign_in_status_label
     
     # Clear status indicators for fresh start
     status_indicators.clear()
@@ -591,10 +686,54 @@ def main():
     left_panel = tk.Frame(main_container, bg='#f0f0f0')
     left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
     
-    # Right panel - Controls
+    # Right panel - Controls (scrollable so all sections are visible)
     right_panel = tk.Frame(main_container, bg='#f0f0f0')
-    right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5, 0))
-    
+    right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+
+    # Scrollable container for right panel content
+    right_canvas = tk.Canvas(right_panel, highlightthickness=0, bg='#f0f0f0')
+    right_scrollbar = ttk.Scrollbar(right_panel, orient="vertical", command=right_canvas.yview)
+    right_scrollable = tk.Frame(right_canvas, bg='#f0f0f0')
+
+    right_canvas_window = right_canvas.create_window((0, 0), window=right_scrollable, anchor="nw")
+    right_canvas.configure(yscrollcommand=right_scrollbar.set)
+
+    def _on_right_scroll_configure(event=None):
+        right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        if right_canvas.winfo_width() > 1:
+            right_canvas.itemconfig(right_canvas_window, width=right_canvas.winfo_width())
+
+    def _on_right_canvas_configure(event):
+        if event.width > 1:
+            right_canvas.itemconfig(right_canvas_window, width=event.width)
+
+    right_scrollable.bind("<Configure>", _on_right_scroll_configure)
+    right_canvas.bind('<Configure>', _on_right_canvas_configure)
+
+    def _on_right_mousewheel(event):
+        if platform.system() == 'Darwin':
+            right_canvas.yview_scroll(int(-1 * (event.delta)), "units")
+        else:
+            right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_right_wheel(widget):
+        widget.bind("<MouseWheel>", _on_right_mousewheel)
+        if platform.system() == 'Darwin':
+            widget.bind("<Button-4>", lambda e: right_canvas.yview_scroll(-1, "units"))
+            widget.bind("<Button-5>", lambda e: right_canvas.yview_scroll(1, "units"))
+
+    def _bind_wheel_to_children(parent):
+        _bind_right_wheel(parent)
+        for child in parent.winfo_children():
+            _bind_wheel_to_children(child)
+
+    _bind_right_wheel(right_canvas)
+    right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    right_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # All right-side content goes into right_scrollable (not right_panel)
+    right_content = right_scrollable
+
     # ========== LEFT PANEL ==========
     
     # Device List Section
@@ -625,7 +764,7 @@ def main():
         orient=tk.HORIZONTAL,
         length=200,
         mode='determinate',
-        maximum=100
+        maximum=1.0
     )
     pressure_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
     
@@ -673,6 +812,13 @@ def main():
     navigation_label = tk.Label(navigation_container, text="Navigation: ΔX=0.000, ΔY=0.000", font=small_font, bg='white', fg='black', anchor='w')
     navigation_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
     
+    # Navigation Direction UI (same indicator as navigation, output is string)
+    navigation_direction_container = tk.Frame(sensor_frame, bg='white')
+    navigation_direction_container.pack(fill=tk.X, pady=(0, 5))
+
+    navigation_direction_label = tk.Label(navigation_direction_container, text="Navigation Direction: --", font=small_font, bg='white', fg='black', anchor='w')
+    navigation_direction_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
     # Gesture UI
     gesture_container = tk.Frame(sensor_frame, bg='white')
     gesture_container.pack(fill=tk.X, pady=(0, 5))
@@ -687,10 +833,36 @@ def main():
     air_touch_button_label = tk.Label(air_touch_button_container, text="Air Touch Button: --", font=small_font, bg='white', fg='black', anchor='w')
     air_touch_button_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
     
-    # ========== RIGHT PANEL ==========
-    
+    # ========== RIGHT PANEL (scrollable) ==========
+
+    # Sign In Section
+    signin_frame = ttk.LabelFrame(right_content, text="Sign In", padding=10)
+    signin_frame.pack(fill=tk.X, pady=(0, 10))
+
+    ttk.Label(signin_frame, text="Email:").grid(row=0, column=0, sticky=tk.W, pady=5)
+    email_entry = ttk.Entry(signin_frame, width=28)
+    email_entry.grid(row=0, column=1, pady=5, padx=10)
+
+    ttk.Label(signin_frame, text="Password:").grid(row=1, column=0, sticky=tk.W, pady=5)
+    password_entry = ttk.Entry(signin_frame, width=28, show="*")
+    password_entry.grid(row=1, column=1, pady=5, padx=10)
+
+    ttk.Label(signin_frame, text="Platform:").grid(row=2, column=0, sticky=tk.W, pady=5)
+    platform_var = tk.StringVar(value="Python")
+    platform_combo = ttk.Combobox(signin_frame, textvariable=platform_var, width=25, state="readonly")
+    platform_combo["values"] = ("Python", "Windows", "macOS", "Linux")
+    platform_combo.grid(row=2, column=1, pady=5, padx=10)
+
+    sign_in_btn = ttk.Button(signin_frame, text="Sign In", command=on_sign_in, width=20)
+    sign_in_btn.grid(row=3, column=0, columnspan=2, pady=10)
+
+    sign_in_status_label = ttk.Label(signin_frame, text="", foreground="blue")
+    sign_in_status_label.grid(row=4, column=0, columnspan=2, pady=5)
+
+    root.bind("<Return>", lambda event: on_sign_in())
+
     # Device Control Section
-    device_control_frame = ttk.LabelFrame(right_panel, text="Device Control", padding=10)
+    device_control_frame = ttk.LabelFrame(right_content, text="Device Control", padding=10)
     device_control_frame.pack(fill=tk.X, pady=(0, 10))
     
     scan_frame = tk.Frame(device_control_frame, bg='white')
@@ -727,9 +899,9 @@ def main():
     set_hand_right_btn = ttk.Button(hand_frame, text="Right", command=set_hand_right, width=12)
     set_hand_right_btn.pack(side=tk.LEFT)
     
-    # Data Features Section
-    features_frame = ttk.LabelFrame(right_panel, text="Data Features", padding=10)
-    features_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+    # Data Features Section (fixed height, no expand - so Firmware/Embedded stay visible)
+    features_frame = ttk.LabelFrame(right_content, text="Data Features", padding=10)
+    features_frame.pack(fill=tk.X, pady=(0, 10))
     
     # Create a scrollable frame for features
     canvas = tk.Canvas(features_frame, highlightthickness=0)
@@ -781,7 +953,8 @@ def main():
         ("IMU Acc", "imu_acc", enable_imu_acc_feature, disable_imu_acc_feature),
         ("IMU Gyro", "imu_gyro", enable_imu_gyro_feature, disable_imu_gyro_feature),
         ("Pressure", "pressure", enable_pressure_feature, disable_pressure_feature),
-        ("Navigation", "navigation", enable_navigation_feature, disable_navigation_feature),
+        ("Navigation Axis", "navigation", enable_navigation_axis_feature, disable_navigation_axis_feature),
+        ("Navigation Direction", "navigation", enable_navigation_direction_feature, disable_navigation_direction_feature),
         ("Gesture", "gesture", enable_gesture_feature, disable_gesture_feature),
         ("Button Changed", "gesture", enable_air_mouse_button_changed_feature, disable_air_mouse_button_changed_feature),
     ]
@@ -816,7 +989,7 @@ def main():
     scrollbar_features.pack(side="right", fill="y")
     
     # Firmware Targets Section
-    firmware_frame = ttk.LabelFrame(right_panel, text="Firmware Targets", padding=10)
+    firmware_frame = ttk.LabelFrame(right_content, text="Firmware Targets", padding=10)
     firmware_frame.pack(fill=tk.X, pady=(0, 10))
     
     firmware_targets = [
@@ -844,8 +1017,8 @@ def main():
         disable_btn.pack(side=tk.LEFT)
     
     # Embedded Features Section
-    embedded_frame = ttk.LabelFrame(right_panel, text="Embedded Features", padding=10)
-    embedded_frame.pack(fill=tk.X)
+    embedded_frame = ttk.LabelFrame(right_content, text="Embedded Features", padding=10)
+    embedded_frame.pack(fill=tk.X, pady=(0, 10))
     
     embedded_row = tk.Frame(embedded_frame, bg='white')
     embedded_row.pack(fill=tk.X)
@@ -863,7 +1036,10 @@ def main():
     
     disable_embedded_btn = ttk.Button(embedded_row, text="Off", command=disable_embedded_airtouch_feature, width=8)
     disable_embedded_btn.pack(side=tk.LEFT)
-    
+
+    # Bind mouse wheel to all right-panel content so scrolling works over any control
+    _bind_wheel_to_children(right_scrollable)
+
     # Start status indicator updates
     root.after(500, update_status_indicators)
     
