@@ -1,11 +1,29 @@
-# SDK Example Application
+# Mudra Python SDK Example
 
-This repository contains an example application demonstrating how to integrate and use the SDK.
+This example application demonstrates device discovery, connection management,
+SDK debug controls, recording, and user sign-in using the published Mudra Python
+SDK. The SDK source and native libraries are intentionally not included here.
 
-## Compatibility
+## Requirements
 
-- SDK version: 0.2.6
-- Firmware version: 6.0.12.1 or later
+- Python 3.10 or newer
+- Bluetooth-enabled computer
+- Mudra device
+
+Install the SDK dependency:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+## Run
+
+```powershell
+python main.py
+```
+
+Use **Find Devices** to list Mudra devices already connected to the Bluetooth
+adapter, or use **Start Scan** and **Stop Scan** to discover nearby devices.
 
 ## SDK
 
